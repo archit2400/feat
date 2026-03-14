@@ -34,7 +34,8 @@ class DefenseShield:
         original = frame.astype(np.float32)
         squeezed = self.feature_squeeze(frame).astype(np.float32)
         diff     = np.mean(np.abs(original - squeezed))
-        return diff > 15, round(diff, 2)
+        # Increased threshold from 15 to 20 to prevent false-positives under normal lighting
+        return diff > 20, round(diff, 2)
 
     def sanitize(self, frame):
         frame = self.feature_squeeze(frame)
