@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 dotenv.config();
 
@@ -10,46 +11,68 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-app.post('/analyze', async (req, res) => {
+// Initialize Gemini
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+let chatSession: any = null;
+
+async function initChat() {
     try {
-        const { threat_level, targets, motion_score, zones, distances, weapons } = req.body;
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        chatSession = model.startChat({
+            history: [
+                {
+                    role: "user",
+                    parts: [{ text: "You are the Tactical Brain of Project FEAT, a smart edge-native visor. You will receive telemetry data. You must ALWAYS respond in exactly 3 lines: \n1. [Assessment of the situation]\n2. [Tactical Action to take]\n3. Risk: [LOW, MEDIUM, HIGH, or CRITICAL]\nDo not add any Markdown formatting or extra text. Be concise, militaristic, and focus on survival directives." }],
+                },
+                {
+                    role: "model",
+                    parts: [{ text: "1. Acknowledged. Telemetry processing initialized.\n2. Awaiting first telemetry burst.\n3. Risk: UNKNOWN" }],
+                }
+            ]
+        });
+        console.log("🦾 Gemini AI initialized in Tactical Mode.");
+    } catch (e) {
+        console.error("Failed to initialize Gemini AI:", e);
+    }
+}
+
+initChat();
+
+app.post('/analyze', async (req: any, res: any) => {
+    try {
+        const { threat_level, targets, labels, motion_score, zones, distances } = req.body;
 
         console.log(`\n🚨 Received Threat Alert from Python Node!`);
         console.log(`Threat Level: ${threat_level}`);
-        console.log(`Targets: ${targets}`);
+        console.log(`Targets: ${targets} (${labels ? labels.join(', ') : 'unknown'})`);
         console.log(`Distances: ${distances}`);
         console.log(`Zones Active: ${zones}`);
+        console.log(`Motion Score: ${motion_score}`);
 
-        let assessment = "Routine monitoring.";
-        let action = "Continue scan.";
-        let risk = "LOW";
-
-        // Logic for determining High/Critical Risk!
-        
-        let has_proximity = false;
-        if (distances && distances.length > 0) {
-            has_proximity = Math.min(...distances) < 3.0; // Someone is closer than 3 meters
+        if (!chatSession) {
+            await initChat();
         }
 
-        if (threat_level >= 80) {
-            assessment = `CRITICAL THREAT: Armed or hostile target in ${zones.join(', ')}.`;
-            action = "ENGAGE PROTOCOLS. Logging Event to Blockchain...";
-            risk = "CRITICAL";
-        } else if (threat_level >= 50 || has_proximity) {
-            assessment = "ELEVATED RISK: Target breached 3-meter proximity.";
-            action = "Monitoring closely. Prepare warning.";
-            risk = "HIGH";
-        } else if (threat_level >= 20 || motion_score > 50) {
-            assessment = `POTENTIAL ANOMALY: Movement detected in ${zones.join(', ')}.`;
-            action = "MAINTAIN OBSERVATION.";
-            risk = "MEDIUM";
+        const prompt = `Current Telemetry:
+- Threat Level Score: ${threat_level}
+- Target Count: ${targets}
+- Detected Objects: ${labels ? labels.join(', ') : 'none'}
+- Movement/Motion Score: ${motion_score}
+- Active Zones: ${zones ? zones.join(', ') : 'none'}
+- Distances (meters): ${distances ? distances.join(', ') : 'none'}
+
+Provide tactical analysis.`;
+
+        if (chatSession) {
+            const result = await chatSession.sendMessage(prompt);
+            const iqResponse = result.response.text().trim();
+            console.log(`🤖 Agent Response:\n${iqResponse}`);
+            res.json({ response: iqResponse });
+        } else {
+            // Fallback
+            res.json({ response: "1. API Offline\n2. Maintain visual.\n3. Risk: UNKNOWN" });
         }
 
-        const iqResponse = `1. ${assessment}\n2. ${action}\n3. Risk: ${risk}`;
-
-        console.log(`🤖 Agent Response: ${iqResponse}`);
-
-        res.json({ response: iqResponse });
     } catch (error) {
         console.error("Error processing request:", error);
         res.status(500).json({ error: "Internal Server Error" });

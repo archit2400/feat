@@ -15,6 +15,7 @@ class IQAgent:
         payload = {
             "threat_level": threat_level,
             "targets": len(detections),
+            "labels": [d.get("raw_label", "unknown") for d in detections],
             "motion_score": motion_score,
             "zones": list(set([d.get("zone", "UNKNOWN") for d in detections])),
             "distances": [d.get("distance", 0) for d in detections]

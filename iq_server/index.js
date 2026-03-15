@@ -1,4 +1,3 @@
-"use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -35,50 +34,87 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
-Object.defineProperty(exports, "__esModule", { value: true });
-var express_1 = require("express");
-var cors_1 = require("cors");
-var dotenv_1 = require("dotenv");
-// Example import from IQ AI ADK (Adjust based on actual ADK docs if needed)
-// import { IQAgent } from '@iqai/adk';
-dotenv_1.default.config();
-var app = (0, express_1.default)();
+var _this = this;
+var express = require('express');
+var cors = require('cors');
+var dotenv = require('dotenv');
+var GoogleGenerativeAI = require('@google/generative-ai').GoogleGenerativeAI;
+dotenv.config();
+var app = express();
 var port = process.env.PORT || 3000;
-app.use((0, cors_1.default)());
-app.use(express_1.default.json());
-// Placeholder for IQ AI Agent Initialization
-// const agent = new IQAgent({ apiKey: process.env.IQ_API_KEY });
-app.post('/analyze', function (req, res) { return __awaiter(void 0, void 0, void 0, function () {
-    var _a, threat_level, targets, motion_score, zones, distances, assessment, action, risk, iqResponse;
+app.use(cors());
+app.use(express.json());
+// Initialize Gemini
+var genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+var chatSession = null;
+function initChat() {
+    return __awaiter(this, void 0, void 0, function () {
+        var model;
+        return __generator(this, function (_a) {
+            try {
+                model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+                chatSession = model.startChat({
+                    history: [
+                        {
+                            role: "user",
+                            parts: [{ text: "You are the Tactical Brain of Project FEAT, a smart edge-native visor. You will receive telemetry data. You must ALWAYS respond in exactly 3 lines: \n1. [Assessment of the situation]\n2. [Tactical Action to take]\n3. Risk: [LOW, MEDIUM, HIGH, or CRITICAL]\nDo not add any Markdown formatting or extra text. Be concise, militaristic, and focus on survival directives." }],
+                        },
+                        {
+                            role: "model",
+                            parts: [{ text: "1. Acknowledged. Telemetry processing initialized.\n2. Awaiting first telemetry burst.\n3. Risk: UNKNOWN" }],
+                        }
+                    ]
+                });
+                console.log("🦾 Gemini AI initialized in Tactical Mode.");
+            }
+            catch (e) {
+                console.error("Failed to initialize Gemini AI:", e);
+            }
+            return [2 /*return*/];
+        });
+    });
+}
+initChat();
+app.post('/analyze', function (req, res) { return __awaiter(_this, void 0, void 0, function () {
+    var _a, threat_level, targets, labels, motion_score, zones, distances, prompt_1, result, iqResponse, error_1;
     return __generator(this, function (_b) {
-        try {
-            _a = req.body, threat_level = _a.threat_level, targets = _a.targets, motion_score = _a.motion_score, zones = _a.zones, distances = _a.distances;
-            console.log("\n\uD83D\uDEA8 Received Threat Alert from Python Node!");
-            console.log("Threat Level: ".concat(threat_level));
-            console.log("Targets: ".concat(targets));
-            console.log("Zones Active: ".concat(zones));
-            assessment = "Routine monitoring.";
-            action = "Continue scan.";
-            risk = "LOW";
-            if (threat_level > 70) {
-                assessment = "CRITICAL THREAT in ".concat(zones.join(', '), ".");
-                action = "ENGAGE PROTOCOLS. Logging to Blockchain...";
-                risk = "CRITICAL";
-            }
-            else if (threat_level > 40) {
-                assessment = "ELEVATED RISK based on proximity.";
-                action = "Monitoring closely.";
-                risk = "HIGH";
-            }
-            iqResponse = "1. ".concat(assessment, "\n2. ").concat(action, "\n3. Risk: ").concat(risk);
-            console.log("\uD83E\uDD16 Agent Response: ".concat(iqResponse));
-            res.json({ response: iqResponse });
+        switch (_b.label) {
+            case 0:
+                _b.trys.push([0, 6, , 7]);
+                _a = req.body, threat_level = _a.threat_level, targets = _a.targets, labels = _a.labels, motion_score = _a.motion_score, zones = _a.zones, distances = _a.distances;
+                console.log("\n\uD83D\uDEA8 Received Threat Alert from Python Node!");
+                console.log("Threat Level: ".concat(threat_level));
+                console.log("Targets: ".concat(targets, " (").concat(labels ? labels.join(', ') : 'unknown', ")"));
+                console.log("Distances: ".concat(distances));
+                console.log("Zones Active: ".concat(zones));
+                console.log("Motion Score: ".concat(motion_score));
+                if (!!chatSession) return [3 /*break*/, 2];
+                return [4 /*yield*/, initChat()];
+            case 1:
+                _b.sent();
+                _b.label = 2;
+            case 2:
+                prompt_1 = "Current Telemetry:\n- Threat Level Score: ".concat(threat_level, "\n- Target Count: ").concat(targets, "\n- Detected Objects: ").concat(labels ? labels.join(', ') : 'none', "\n- Movement/Motion Score: ").concat(motion_score, "\n- Active Zones: ").concat(zones ? zones.join(', ') : 'none', "\n- Distances (meters): ").concat(distances ? distances.join(', ') : 'none', "\n\nProvide tactical analysis.");
+                if (!chatSession) return [3 /*break*/, 4];
+                return [4 /*yield*/, chatSession.sendMessage(prompt_1)];
+            case 3:
+                result = _b.sent();
+                iqResponse = result.response.text().trim();
+                console.log("\uD83E\uDD16 Agent Response:\n".concat(iqResponse));
+                res.json({ response: iqResponse });
+                return [3 /*break*/, 5];
+            case 4:
+                // Fallback
+                res.json({ response: "1. API Offline\n2. Maintain visual.\n3. Risk: UNKNOWN" });
+                _b.label = 5;
+            case 5: return [3 /*break*/, 7];
+            case 6:
+                error_1 = _b.sent();
+                console.error("Error processing request:", error_1);
+                res.status(500).json({ error: "Internal Server Error" });
+                return [3 /*break*/, 7];
+            case 7: return [2 /*return*/];
         }
-        catch (error) {
-            console.error("Error processing request:", error);
-            res.status(500).json({ error: "Internal Server Error" });
-        }
-        return [2 /*return*/];
     });
 }); });
 app.listen(port, function () {
