@@ -11,6 +11,7 @@ from scipy.signal import butter, filtfilt, find_peaks
 try:
     from core.ai_engine import AIEngine
     from core.defense_shield import DefenseShield
+    from core.iq_agent import IQAgent
     HAS_CORE = True
 except ImportError as e:
     print(f"[ERROR] Could not load core modules. Ensure 'core' directory exists. {e}")
@@ -74,9 +75,14 @@ def main():
     # Initialize Core Engines
     ai = AIEngine() if HAS_CORE else None
     shield = DefenseShield() if HAS_CORE else None
+    
+    tactical_agent = None
+    if HAS_CORE:
+        tactical_agent = IQAgent()
+        tactical_agent.enabled = True
 
     # --- Hardware Link Setup (Arduino Biometrics) ---
-    SERIAL_PORT = 'COM3' 
+    SERIAL_PORT = 'COM5' 
     BAUD_RATE = 115200
 
     try:
@@ -104,7 +110,7 @@ def main():
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
     # 0 = Built-in laptop cam, 1 or 2 = External Logitech Brio 101
-    CAMERA_INDEX = 1  
+    CAMERA_INDEX = 0  
     cap = cv2.VideoCapture(CAMERA_INDEX) # Removed CAP_DSHOW, letting OpenCV auto-detect backend
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -130,6 +136,9 @@ def main():
     ai_status = "SECURE"
     ai_status_color = (0, 255, 0)
     ai_target_count = 0
+    
+    last_iq_request_time = 0
+    tactical_report_summary = ["STANDBY"]
     
     # rPPG Data buffers
     times = deque(maxlen=BUFFER_SIZE)
@@ -176,6 +185,7 @@ def main():
     while cap.isOpened():
         # --- VISION MODES START ---
         display_frame = frame1.copy()
+        height, width = display_frame.shape[:2]
 
         if night_mode:
             display_frame = night_vision(display_frame)
@@ -324,25 +334,10 @@ def main():
                         except Exception as e:
                             pass 
 
-            # Biometric HUD Overlay
-            bio_text_y = 400 # Fixed position for stability
-            
-            # BIOMETRIC THREAT LOGIC: High heartrate indicates stress/deception/threat
+            # Biometric Threat Escalation Logic
             is_bio_threat = False
-            
-            if len(green_signal) < BUFFER_SIZE:
-                status_text = f"CALIBRATING BIO... {int((len(green_signal)/BUFFER_SIZE)*100)}%"
-                color = (0, 255, 255) # Yellow
-            else:
-                if current_bpm > 100: # Elevated heart rate threshold
-                    status_text = f"HEART RATE: {current_bpm} BPM (ELEVATED: THREAT)"
-                    color = (0, 0, 255) # Red
-                    is_bio_threat = True
-                else:
-                    status_text = f"HEART RATE: {current_bpm} BPM (NORMAL)"
-                    color = (0, 255, 0) # Green
-            
-            cv2.putText(display_frame, status_text, (10, bio_text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            if len(green_signal) >= BUFFER_SIZE and current_bpm > 100:
+                is_bio_threat = True
             
             # Escalation: If Biometrics detect a threat, override main HUD status
             if is_bio_threat:
@@ -355,85 +350,179 @@ def main():
             times.clear()
 
         # --- HARDWARE BIOMETRIC READ & DRAW (Arduino) ---
-        if arduino and arduino.in_waiting > 0:
-            try:
-                line = arduino.readline().decode('utf-8').strip()
-                if line:
-                    val = float(line)
-                    hw_sensor_data.append(val)
-                    hw_times.append(time.time())
-            except Exception as e:
-                pass # Ignore serial garbage
+        if arduino:
+            while arduino.in_waiting > 0:
+                try:
+                    line = arduino.readline().decode('utf-8').strip()
+                    if line:
+                        val = float(line)
+                        if len(hw_sensor_data) > 0:
+                            val = (val + hw_sensor_data[-1]) / 2 # Smooth signal
+                        hw_sensor_data.append(val)
+                        hw_times.append(time.time())
+                except:
+                    pass
+        elif hw_bio_mode:
+            # SIMULATION MODE: If Arduino is not plugged in, simulate a realistic heartbeat!
+            t = time.time()
+            beat_phase = (t % 1.0) # 1 beat per second (60 BPM)
+            val = np.sin(t * 15) * 0.02 # Normal noise
+            
+            # P-QRS-T complex simulation
+            if 0.1 <= beat_phase <= 0.15:
+                # P wave
+                val += np.sin((beat_phase - 0.1) * np.pi * 20) * 0.1
+            elif 0.2 <= beat_phase <= 0.22:
+                # Q dip
+                val -= 0.1
+            elif 0.22 < beat_phase <= 0.25:
+                # R spike
+                val += 1.0
+            elif 0.25 < beat_phase <= 0.28:
+                # S dip
+                val -= 0.2
+            elif 0.4 <= beat_phase <= 0.5:
+                # T wave
+                val += np.sin((beat_phase - 0.4) * np.pi * 10) * 0.15
+                
+            hw_sensor_data.append(val)
+            hw_times.append(t)
 
         if hw_bio_mode:
-            # Define where the graph sits on your HUD
-            graph_x, graph_y = 30, 150 
-            graph_w, graph_h = 250, 100
-            
-            # Draw the boundary box and label
-            cv2.rectangle(display_frame, (graph_x, graph_y), (graph_x + graph_w, graph_y + graph_h), (0, 255, 0), 1)
-            cv2.putText(display_frame, "LIVE HARDWARE BIO-FEED", (graph_x, graph_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        
-            data_min = min(hw_sensor_data)
-            data_max = max(hw_sensor_data)
-            
-            # Only draw the wave if we have actual fluctuating data
-            if data_max - data_min > 0: 
-                # Normalize the raw LDR values to fit the height of our drawn box
-                normalized_data = [
-                    int(graph_h - ((x - data_min) / (data_max - data_min) * graph_h))
-                    for x in hw_sensor_data
-                ]
-                
-                # Plot the connected lines to create the wave
-                for i in range(1, len(normalized_data)):
-                    x1 = graph_x + int((i - 1) * (graph_w / GRAPH_POINTS))
-                    y1 = graph_y + normalized_data[i - 1]
-                    x2 = graph_x + int(i * (graph_w / GRAPH_POINTS))
-                    y2 = graph_y + normalized_data[i]
-                    
-                    # Draw the line segment (Cyan color)
-                    cv2.line(display_frame, (x1, y1), (x2, y2), (255, 255, 0), 2)
-                
-                # --- Dynamic Peak Finding for Hardware BPM ---
+            # Move graph to Bottom-Right to avoid overlapping with Targets/Status text
+            graph_w, graph_h = 250, 80
+            graph_x, graph_y = width - graph_w - 20, height - graph_h - 40
+
+            # Draw Graph Background and Border (Darker for contrast)
+            cv2.rectangle(display_frame, (graph_x, graph_y), (graph_x + graph_w, graph_y + graph_h), (0, 0, 0), -1)
+            cv2.rectangle(display_frame, (graph_x, graph_y), (graph_x + graph_w, graph_y + graph_h), (0, 255, 0), 2)
+
+            # Draw Grid Lines
+            for i in range(1, 4):
+                line_y = graph_y + int((graph_h / 4) * i)
+                cv2.line(display_frame, (graph_x, line_y), (graph_x + graph_w, line_y), (0, 50, 0), 1)
+            for i in range(1, 10):
+                line_x = graph_x + int((graph_w / 10) * i)
+                cv2.line(display_frame, (line_x, graph_y), (line_x, graph_y + graph_h), (0, 50, 0), 1)
+
+            cv2.putText(display_frame,
+                        "HW BIO-FEED (SIMULATED)" if not arduino else "LIVE HW BIO-FEED",
+                        (graph_x, graph_y-5),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4,(0,255,0),1)
+
+            if len(hw_sensor_data) > 5:
+                data_min = min(hw_sensor_data)
+                data_max = max(hw_sensor_data)
+
+                # Add tighter padding so the wave fills the graph nicely
+                padding = (data_max - data_min) * 0.1 if data_max > data_min else 1.0
+                safe_min = data_min - padding
+                safe_max = data_max + padding
+                if safe_max == safe_min:
+                    safe_max += 1
+
+                normalized_data = []
+                for x in hw_sensor_data:
+                    # Invert Y so higher values go UP
+                    y = int(graph_h - ((x - safe_min) / (safe_max - safe_min) * graph_h))
+                    normalized_data.append(y)
+
+                # Create points for smooth ECG wave
+                points = []
+                for i,y in enumerate(normalized_data):
+                    px = graph_x + int(i * (graph_w / GRAPH_POINTS))
+                    # Clamp Y so it doesn't draw outside the box
+                    py = max(graph_y, min(graph_y + graph_h, graph_y + y))
+                    points.append((px,py))
+
+                # Draw smooth wave (Classic Neon Green/Medical wave)
+                for i in range(1,len(points)):
+                    # Fade out older data slightly on the left
+                    alpha = i / len(points)
+                    color = (int(0 * alpha), int(255 * alpha), int(0 * alpha))
+                    thickness = 2 if i > len(points) - 20 else 1
+                    cv2.line(display_frame, points[i-1], points[i], color, thickness)
+
+                # ---------- Heartbeat detection ----------
                 local_avg = np.mean(hw_sensor_data)
                 local_max = np.max(hw_sensor_data)
-                
-                # Set a dynamic threshold halfway between the average and the highest peak
-                threshold = local_avg + (local_max - local_avg) * 0.5 
-                
+                threshold = local_avg + (local_max-local_avg)*0.5
                 latest_val = hw_sensor_data[-1]
-                
-                # If the wave crosses our threshold going up...
+
                 if latest_val > threshold and not is_peaking:
                     is_peaking = True
                     current_time = time.time()
                     time_diff = current_time - last_beat_time
                     
-                    # Filter out noise (only accept beats between 40 and 200 BPM)
-                    if 0.3 < time_diff < 1.5: 
+                    if 0.3 < time_diff < 1.5:
                         raw_bpm = 60.0 / time_diff
                         bpm_values.append(raw_bpm)
-                        # Average it out so the display is smooth
-                        hw_current_bpm = int(np.mean(bpm_values)) 
-                        
+                        hw_current_bpm = int(np.mean(bpm_values))
                     last_beat_time = current_time
-                    
-                # Reset the peak detector when the wave drops back below average
-                elif latest_val < local_avg: 
+                elif latest_val < local_avg:
                     is_peaking = False
 
-            # Display computed BPM next to the graph
+                # Heartbeat flash effect
+                if is_peaking:
+                    cv2.circle(display_frame, (graph_x + graph_w - 20, graph_y + 20), 8, (0, 0, 255), -1)
+
+            # ---------- Display BPM ----------
             if hw_current_bpm > 0:
-                cv2.putText(display_frame, f"HEART RATE: {hw_current_bpm} BPM", (graph_x, graph_y - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                cv2.putText(display_frame, f"RATE: {hw_current_bpm} BPM", (graph_x, graph_y-20), cv2.FONT_HERSHEY_SIMPLEX, 0.5,(0,255,255),2)
             else:
-                cv2.putText(display_frame, "HEART RATE: CALIBRATING...", (graph_x, graph_y - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 1)
+                cv2.putText(display_frame, "RATE: SYNCING...", (graph_x, graph_y-20), cv2.FONT_HERSHEY_SIMPLEX, 0.5,(0,165,255),1)
+
+        # --- BIOMETRIC HUD (Software rPPG text) ---
+        if bio_mode:
+            # Place the software rPPG text cleanly on the left side
+            bio_text_y = height - 120 
+            
+            if len(green_signal) < BUFFER_SIZE:
+                status_text = f"rPPG HEART RATE: CALIBRATING... {int((len(green_signal)/BUFFER_SIZE)*100)}%"
+                color = (0, 255, 255) # Yellow
+            else:
+                if current_bpm > 100: 
+                    status_text = f"rPPG HEART RATE: {current_bpm} BPM (ELEVATED)"
+                    color = (0, 0, 255) # Red
+                else:
+                    status_text = f"rPPG HEART RATE: {current_bpm} BPM (NORMAL)"
+                    color = (0, 255, 0) # Green
+            
+            # Draw on the LEFT side, clean background box so it's always readable
+            (text_w, text_h), _ = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+            cv2.rectangle(display_frame, (8, bio_text_y - 15), (12 + text_w, bio_text_y + 5), (0, 0, 0), -1)
+            cv2.putText(display_frame, status_text, (10, bio_text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         # --- THREAT LEVEL ---
         threat_level, threat_color = get_threat_level(target_count, motion_score)
 
+        current_sys_time = time.time()
+        if tactical_agent and tactical_agent.enabled and len(local_detections) > 0:
+            if current_sys_time - last_iq_request_time > 5:
+                last_iq_request_time = current_sys_time
+                tactical_report_summary[0] = "ANALYZING TACTICS..."
+                print(f"\n[ALERT] Targets active! Consulting Tactical AI...")
+                
+                def fetch_ai_verdict(dets, t_level, m_score):
+                    verdict = tactical_agent.analyze(
+                        detections=dets,
+                        threat_level=t_level,
+                        motion_score=m_score
+                    )
+                    if verdict:
+                        summary = str(verdict).replace('\n', ' ')
+                        tactical_report_summary[0] = summary[:60] + "..." if len(summary) > 60 else summary
+                    else:
+                        tactical_report_summary[0] = "ANALYSIS FAILED"
+                    print(f"\n--- AI TACTICAL REPORT ---")
+                    print(verdict)
+                    print(f"--------------------------\n")
+                    
+                # Run the HTTP request in a background thread to prevent freezing the camera!
+                threading.Thread(target=fetch_ai_verdict, args=(list(local_detections), threat_level, motion_score), daemon=True).start()
+
         # --- HUD RENDERING ---
-        height, width = display_frame.shape[:2]
 
         # Crosshair
         cx, cy = width // 2, height // 2
@@ -468,10 +557,45 @@ def main():
         cv2.putText(display_frame, f"THREAT: {threat_level}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, threat_color, 2)
         cv2.putText(display_frame, f"TARGETS: {target_count}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         
-        # HUD Text Bottom/Right
-        cv2.putText(display_frame, f"MODE: {mode_text}", (10, height - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        # HUD Text Bottom Left Block
+        cv2.putText(display_frame, f"MODE: {mode_text}", (10, height - 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        
+        # IQ Tactics text - Split into vertical lines for readability
+        if tactical_agent.enabled:
+            tac_y = height - 75
+            if target_count > 0 and tactical_agent.last_analysis:
+                # Split the analysis by newlines since the Node server formats it as "1. ...\n2. ...\n3. ..."
+                lines = str(tactical_agent.last_analysis).split('\n')
+                
+                # Draw the header
+                (tac_w, tac_h), _ = cv2.getTextSize("IQ TACTICS:", cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                cv2.rectangle(display_frame, (8, tac_y - 15), (12 + tac_w, tac_y + 5), (0, 0, 0), -1)
+                cv2.putText(display_frame, "IQ TACTICS:", (10, tac_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 255), 1)
+                tac_y += 20
+                
+                # Draw each step
+                for i, line in enumerate(lines):
+                    if line.strip(): # Avoid empty lines
+                        line_text = line.strip()
+                        # Shorten if it's too crazy long, though it shouldn't be
+                        if len(line_text) > 60:
+                            line_text = line_text[:57] + "..."
+                            
+                        (tac_w, tac_h), _ = cv2.getTextSize(line_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                        cv2.rectangle(display_frame, (8, tac_y - 13), (12 + tac_w, tac_y + 3), (0, 0, 0), -1)
+                        cv2.putText(display_frame, line_text, (10, tac_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 150, 255), 1)
+                        tac_y += 18
+            elif target_count > 0:
+                header = "IQ TACTICS: ANALYZING TACTICS..."
+                (tac_w, tac_h), _ = cv2.getTextSize(header, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                cv2.rectangle(display_frame, (8, tac_y - 15), (12 + tac_w, tac_y + 5), (0, 0, 0), -1)
+                cv2.putText(display_frame, header, (10, tac_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 100, 255), 1)
+
+        # HUD Text Right Top
         cv2.putText(display_frame, f"FPS: {int(fps)}", (width - 100, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        cv2.putText(display_frame, timestamp, (10, height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
+        # Timestamp Bottom Left
+        cv2.putText(display_frame, timestamp, (10, height - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         # --- DISPLAY ---
         # Apply Ghost HUD effect (Alpha Blend: 70% HUD, 30% Original Background)

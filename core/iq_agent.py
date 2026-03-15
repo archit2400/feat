@@ -4,34 +4,38 @@ class IQAgent:
     def __init__(self):
         print("[IQ] IQ AI Agent Initialized...")
         self.agent_url = "https://your-agent.iqai.com/api/chat"
-        self.enabled   = False  # Set True after deploying your agent
+        self.enabled   = True  # Set True after deploying your agent
         self.last_analysis = None
 
     def analyze(self, detections, threat_level, motion_score):
         if not self.enabled or not detections:
             return None
 
-        prompt = (
-            f"FEAT Edge Node Tactical Report:\n"
-            f"Threat Level: {threat_level}\n"
-            f"Targets: {len(detections)}\n"
-            f"Motion Score: {motion_score}\n"
-            f"Zones Active: {[d['zone'] for d in detections]}\n"
-            f"Distances: {[str(d['distance'])+'m' for d in detections]}\n\n"
-            f"You are a tactical AI. Give:\n"
-            f"1. Threat assessment (1 line)\n"
-            f"2. Action (1 line)\n"
-            f"3. Risk: LOW/MEDIUM/HIGH/CRITICAL"
-        )
+        # Build the payload to send to the Node.js IQ AI Bridge
+        payload = {
+            "threat_level": threat_level,
+            "targets": len(detections),
+            "motion_score": motion_score,
+            "zones": list(set([d.get("zone", "UNKNOWN") for d in detections])),
+            "distances": [d.get("distance", 0) for d in detections]
+        }
 
         try:
+            # Send data to our local Express server (which runs the IQ AI ADK)
+            # URL will be our local bridge on port 3000
+            bridge_url = "http://localhost:3000/analyze"
+            
             response = requests.post(
-                self.agent_url,
-                json={"messages": [{"role": "user", "content": prompt}]},
+                bridge_url,
+                json=payload,
                 timeout=5
             )
-            result = response.json().get("response", "No response")
+            
+            result = response.json().get("response", "No response from Bridge")
             self.last_analysis = result
             return result
+            
+        except requests.exceptions.ConnectionError:
+            return "IQ AI Bridge Offline (Is the Node server running?)"
         except Exception as e:
-            return f"Agent offline: {e}"
+            return f"Bridge Error: {e}"
